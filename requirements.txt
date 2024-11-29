@@ -1,0 +1,10 @@
+Flask
+parselmouth
+python-dotenv
+numpy
+joblib
+scipy
+scikit_learn
+pandas
+tensorflow
+Flask-PyMongo
