@@ -1,5 +1,5 @@
 Flask
-parselmouth
+praat-parselmouth
 python-dotenv
 numpy
 joblib
