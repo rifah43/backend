@@ -1,42 +1,61 @@
-import joblib
-from sklearn.model_selection import train_test_split
-from sklearn.naive_bayes import GaussianNB
+import pandas as pd
+import numpy as np
 from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import accuracy_score, precision_score, recall_score
-from data_preprocessing import load_and_process_data
+from sklearn.naive_bayes import GaussianNB
+from sklearn.model_selection import train_test_split
+import joblib
+import os
 
-def train_models(file_path):
-    X_men, y_men, X_women, y_women = load_and_process_data(file_path)
-    
-    X_train_men, X_test_men, y_train_men, y_test_men = train_test_split(X_men, y_men, test_size=0.2, random_state=42)
-
-    X_train_women, X_test_women, y_train_women, y_test_women = train_test_split(X_women, y_women, test_size=0.2, random_state=42)
-    
-    model_men = GaussianNB()
-    model_men.fit(X_train_men, y_train_men)
-    y_pred_men = model_men.predict(X_test_men)
-    
-    # Evaluate Naive Bayes model for men
-    accuracy_men = accuracy_score(y_test_men, y_pred_men)
-    sensitivity_men = recall_score(y_test_men, y_pred_men)
-    specificity_men = precision_score(y_test_men, y_pred_men, pos_label=0)
-    print(f'Men Model Accuracy: {accuracy_men}')
-    print(f'Men Model Sensitivity (Recall): {sensitivity_men}')
-    print(f'Men Model Specificity (Precision for non-T2DM): {specificity_men}')
-    
-    # Train Logistic Regression model for women
-    model_women = LogisticRegression(max_iter=1000)
-    model_women.fit(X_train_women, y_train_women)
-    y_pred_women = model_women.predict(X_test_women)
-    
-    # Evaluate Logistic Regression model for women
-    accuracy_women = accuracy_score(y_test_women, y_pred_women)
-    sensitivity_women = recall_score(y_test_women, y_pred_women)
-    specificity_women = precision_score(y_test_women, y_pred_women, pos_label=0)
-    print(f'Women Model Accuracy: {accuracy_women}')
-    print(f'Women Model Sensitivity (Recall): {sensitivity_women}')
-    print(f'Women Model Specificity (Precision for non-T2DM): {specificity_women}')
-    
-    # Save the models
-    joblib.dump(model_men, 'MLmodels/naive_bayes_men.pkl')
-    joblib.dump(model_women, 'MLmodels/logistic_regression_women.pkl')
+class ModelTrainer:
+    def __init__(self, data_path):
+        """Initialize trainer with path to demo dataset"""
+        self.data_path = data_path
+        self.female_model = LogisticRegression()
+        self.male_model = GaussianNB()
+        
+    def load_and_preprocess_data(self):
+        """Load and preprocess the demo dataset"""
+        df = pd.read_csv(self.data_path)
+        
+        # Convert diagnosis to binary
+        df['is_diabetic'] = (df['Diagnosis'] == 'T2DM').astype(int)
+        
+        # Split by gender
+        self.female_data = df[df['Gender'] == 'Female']
+        self.male_data = df[df['Gender'] == 'Male']
+        
+        # Prepare feature sets according to the paper
+        self.female_features = self.female_data[['meanF0', 'stdevF0', 'rapJitter']]
+        self.female_labels = self.female_data['is_diabetic']
+        
+        self.male_features = self.male_data[['meanInten', 'apq11Shimmer']]
+        self.male_labels = self.male_data['is_diabetic']
+        
+    def train_models(self):
+        """Train both gender-specific models"""
+        # Train female model
+        X_train_f, X_test_f, y_train_f, y_test_f = train_test_split(
+            self.female_features, self.female_labels, test_size=0.2, random_state=42
+        )
+        self.female_model.fit(X_train_f, y_train_f)
+        female_accuracy = self.female_model.score(X_test_f, y_test_f)
+        
+        # Train male model
+        X_train_m, X_test_m, y_train_m, y_test_m = train_test_split(
+            self.male_features, self.male_labels, test_size=0.2, random_state=42
+        )
+        self.male_model.fit(X_train_m, y_train_m)
+        male_accuracy = self.male_model.score(X_test_m, y_test_m)
+        
+        return {
+            'female_accuracy': female_accuracy,
+            'male_accuracy': male_accuracy
+        }
+        
+    def save_models(self, models_dir='models'):
+        """Save trained models"""
+        if not os.path.exists(models_dir):
+            os.makedirs(models_dir)
+            
+        joblib.dump(self.female_model, os.path.join(models_dir, 'female_model.joblib'))
+        joblib.dump(self.male_model, os.path.join(models_dir, 'male_model.joblib'))
