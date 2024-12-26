@@ -1,48 +1,32 @@
 import pandas as pd
+import numpy as np
 
-def load_and_process_data(men_non_t2dm_path, men_t2dm_path, women_non_t2dm_path, women_t2dm_path):
-    """
-    Load datasets from CSV files for men and women and process them separately for T2DM and non-T2DM groups.
-    Returns separate DataFrames for features (X) and labels (y) for both genders.
-    """
-    # Load the datasets
-    men_non_t2dm_data = pd.read_csv(men_non_t2dm_path)
-    men_t2dm_data = pd.read_csv(men_t2dm_path)
-    women_non_t2dm_data = pd.read_csv(women_non_t2dm_path)
-    women_t2dm_data = pd.read_csv(women_t2dm_path)
+def preprocess_data(df):
+    """Preprocess data for model training"""
+    processed_df = df.copy()
     
-    # Combine data for men and women separately
-    men_data = pd.concat([men_non_t2dm_data, men_t2dm_data])
-    women_data = pd.concat([women_non_t2dm_data, women_t2dm_data])
+    # Convert diagnosis to binary
+    if 'Diagnosis' in processed_df.columns:
+        processed_df['is_diabetic'] = (processed_df['Diagnosis'] == 'T2DM').astype(int)
     
-    # Separate features and labels for men
-    X_men = men_data[['Intensity', 'APQ11_Shimmer']]
-    y_men = men_data['Diagnosis_Label']
+    # Handle missing values
+    numeric_columns = ['meanF0', 'stdevF0', 'rapJitter', 'meanInten', 'apq11Shimmer']
+    processed_df[numeric_columns] = processed_df[numeric_columns].fillna(processed_df[numeric_columns].mean())
     
-    # Separate features and labels for women
-    X_women = women_data[['Pitch', 'Pitch_SD', 'RAP_Jitter']]
-    y_women = women_data['Diagnosis_Label']
+    # Normalize features
+    for col in numeric_columns:
+        mean = processed_df[col].mean()
+        std = processed_df[col].std()
+        processed_df[col] = (processed_df[col] - mean) / std
     
-    return X_men, y_men, X_women, y_women
+    return processed_df
 
-# Example usage
-if __name__ == "__main__":
-    # File paths for each group
-    men_non_t2dm_path = 'men_non_t2dm.csv'
-    men_t2dm_path = 'men_t2dm.csv'
-    women_non_t2dm_path = 'women_non_t2dm.csv'
-    women_t2dm_path = 'women_t2dm.csv'
+def prepare_features_for_prediction(voice_data, gender):
+    """Prepare features for model prediction"""
+    if gender == 'Female':
+        required_features = ['meanF0', 'stdevF0', 'rapJitter']
+    else:
+        required_features = ['meanInten', 'apq11Shimmer']
     
-    # Load and process the data
-    X_men, y_men, X_women, y_women = load_and_process_data(men_non_t2dm_path, men_t2dm_path, women_non_t2dm_path, women_t2dm_path)
-    
-    # Display the first few rows of the datasets
-    print("Men's Data Features:")
-    print(X_men.head())
-    print("\nMen's Data Labels:")
-    print(y_men.head())
-    
-    print("\nWomen's Data Features:")
-    print(X_women.head())
-    print("\nWomen's Data Labels:")
-    print(y_women.head())
+    features = {k: voice_data[k] for k in required_features}
+    return features
