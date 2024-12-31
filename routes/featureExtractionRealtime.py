@@ -2,8 +2,11 @@ from flask import Blueprint, request, jsonify
 import os
 import pandas as pd
 from utils.audioProcessing import extract_audio_features
-from config import TEMP_DIR
+from config import Config
 import wave
+
+
+TEMP_DIR = Config.TEMP_DIR
 
 def is_wav_file(file_path):
     try:

@@ -7,6 +7,8 @@ from db import mongo
 from werkzeug.security import generate_password_hash
 from functools import wraps
 import jwt
+print(jwt.__file__)
+
 import datetime
 
 user_blueprint = Blueprint('user_routes', __name__)
@@ -46,7 +48,7 @@ def auth_required(f):
 def create_user():
     user_data = request.json
     device_id = request.headers.get('X-Device-ID')
-    
+    print(device_id,"khgkh")
     if not device_id:
         return jsonify({"message": "Device ID is required"}), 400
         
@@ -57,7 +59,8 @@ def create_user():
             'user_id': str(result[0]['user_id']),
             'device_id': device_id,
             'exp': datetime.datetime.utcnow() + datetime.timedelta(days=1)
-        }, SECRET_KEY)
+        }, SECRET_KEY, algorithm="HS256")
+
         
         response_data = {
             "message": "Profile created successfully",
@@ -86,10 +89,11 @@ def login():
     
     if user:
         token = jwt.encode({
-            'user_id': str(user['_id']),
+            'user_id': str(user[0]['user_id']),
             'device_id': device_id,
             'exp': datetime.datetime.utcnow() + datetime.timedelta(days=1)
-        }, SECRET_KEY)
+        }, SECRET_KEY, algorithm="HS256")
+
         
         user['_id'] = str(user['_id'])
         user.pop('password', None)
