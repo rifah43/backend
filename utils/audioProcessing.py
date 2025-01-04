@@ -1,68 +1,81 @@
+import os
 import parselmouth
 from parselmouth.praat import call
+import numpy as np
+import tempfile
 
-AUDIO_DIR = 'audio_files'  # Update with your actual directory path
-OUTPUT_CSV = 'voice_dataset.csv'
-
-def extract_audio_features(file_path, gender):
+def extract_audio_features(file_storage, gender):
+    """
+    Extract acoustic features from uploaded audio file
+    
+    Args:
+        file_storage: FileStorage object from Flask
+        gender: 'male' or 'female'
+    """
     try:
-        sound = parselmouth.Sound(file_path)
+        # Save the uploaded file to a temporary file
+        temp_dir = tempfile.mkdtemp()
+        temp_path = os.path.join(temp_dir, 'temp.wav')
         
-        # Set f0min and f0max based on gender
-        if gender.lower() == "female":
-            f0min = 100  # Minimum pitch frequency for females
-            f0max = 300  # Maximum pitch frequency for females
-        elif gender.lower() == "male":
-            f0min = 75   # Minimum pitch frequency for males
-            f0max = 200  # Maximum pitch frequency for males
-        else:
-            raise ValueError("Gender must be 'male' or 'female'.")
-
-        # Fundamental frequency (Pitch) and standard deviation
+        file_storage.save(temp_path)
+        
+        # Set pitch range based on gender
+        f0min = 75 if gender.lower() == 'male' else 100
+        f0max = 200 if gender.lower() == 'male' else 300
+        
+        # Create Praat sound object from saved file
+        sound = parselmouth.Sound(temp_path)
+        
+        # Extract pitch features
         pitch = sound.to_pitch()
         meanF0 = call(pitch, "Get mean", 0, 0, "Hertz")
         stdevF0 = call(pitch, "Get standard deviation", 0, 0, "Hertz")
         
-        # Intensity and its standard deviation
+        # Extract intensity features
         intensity = sound.to_intensity()
-        meanIntensity = call(intensity, "Get mean", 0, 0)
-        stdevIntensity = call(intensity, "Get standard deviation", 0, 0)
+        meanInten = call(intensity, "Get mean", 0, 0)
+        stdevInten = call(intensity, "Get standard deviation", 0, 0)
         
-        # Harmonic Noise Ratio (HNR)
+        # Extract harmonicity
         harmonicity = sound.to_harmonicity()
         hnr = call(harmonicity, "Get mean", 0, 0)
         
-        # # Jitter and RAP Jitter
-        pointProcess = call(sound, "To PointProcess (periodic, cc)", f0min, f0max)
-        localJitter = call(pointProcess, "Get jitter (local)", 0, 0, 0.0001, 0.02, 1.3)
-        rapJitter = call(pointProcess, "Get jitter (rap)", 0, 0, 0.0001, 0.02, 1.3)
+        # Extract jitter and shimmer
+        point_process = call(sound, "To PointProcess (periodic, cc)", f0min, f0max)
         
-        # # Shimmer and APQ11 Shimmer
-        localShimmer = call([sound, pointProcess], "Get shimmer (local)", 0, 0, 0.0001, 0.02, 1.3, 1.6)
-        apq11Shimmer = call([sound, pointProcess], "Get shimmer (apq11)", 0, 0, 0.0001, 0.02, 1.3, 1.6)
+        localJitter = call(point_process, "Get jitter (local)", 0, 0, 0.0001, 0.02, 1.3)
+        rapJitter = call(point_process, "Get jitter (rap)", 0, 0, 0.0001, 0.02, 1.3)
         
-        # # Phonation Time
-        phonationTime = call(pointProcess, "Get total duration")  # Should only require the PointProcess
-        
-        # # Voice Turbulence Index (VTI)
-        vti = sound.to_harmonicity()  # Use harmonicity for VTI
-        meanVTI = call(vti, "Get mean", 0, 0)
+        localShimmer = call([sound, point_process], "Get shimmer (local)", 0, 0, 0.0001, 0.02, 1.3, 1.6)
+        apq11Shimmer = call([sound, point_process], "Get shimmer (apq11)", 0, 0, 0.0001, 0.02, 1.3, 1.6)
 
+        # Clean up temporary file
+        os.remove(temp_path)
+        os.rmdir(temp_dir)
+        
         features = {
-            "meanF0": meanF0,
-            "stdevF0": stdevF0,
-            "meanIntensity": meanIntensity,
-            "stdevIntensity": stdevIntensity,
-            "hnr": hnr,
-            "localJitter": localJitter,
-            "rapJitter": rapJitter,
-            "localShimmer": localShimmer,
-            "apq11Shimmer": apq11Shimmer,
-            "phonationTime": phonationTime,
-            "meanVTI": meanVTI
+            'meanF0': float(meanF0),
+            'stdevF0': float(stdevF0),
+            'meanInten': float(meanInten),
+            'stdevInten': float(stdevInten),
+            'hnr': float(hnr),
+            'localJitter': float(localJitter),
+            'rapJitter': float(rapJitter),
+            'localShimmer': float(localShimmer),
+            'apq11Shimmer': float(apq11Shimmer)
         }
         
+        # Validate extracted features
+        if any(np.isnan(value) for value in features.values()):
+            raise ValueError("Invalid audio features detected (NaN values)")
+            
         return features
+        
     except Exception as e:
-        raise Exception(f"Error extracting audio features: {e}")
-
+        raise Exception(f"Error extracting audio features: {str(e)}")
+    finally:
+        # Ensure temporary files are cleaned up
+        if 'temp_path' in locals() and os.path.exists(temp_path):
+            os.remove(temp_path)
+        if 'temp_dir' in locals() and os.path.exists(temp_dir):
+            os.rmdir(temp_dir)

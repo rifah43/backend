@@ -16,6 +16,7 @@ class VoiceFeaturesSchema(Schema):
     phonationTime = fields.Float(required=True, validate=validate.Range(min=0))
     meanVTI = fields.Float(required=True)
 
+
 class PredictionSchema(Schema):
     """Voice analysis prediction schema"""
     prediction_id = fields.Str(required=True)
@@ -55,3 +56,17 @@ class ComplianceSchema(Schema):
     compliance_rate = fields.Float(required=True, validate=validate.Range(min=0, max=100))
     streak = fields.Int(required=True)
     last_recording = fields.DateTime(required=True)
+
+
+
+    
+    # class TrendData(db.Model):
+    # id = db.Column(db.Integer, primary_key=True)
+    # user_id = db.Column(db.String(50), nullable=False)
+    # timestamp = db.Column(db.DateTime, default=datetime.utcnow)
+    # risk_probability = db.Column(db.Float, nullable=False)
+    # meanF0 = db.Column(db.Float)
+    # stdevF0 = db.Column(db.Float)
+    # rapJitter = db.Column(db.Float)
+    # meanInten = db.Column(db.Float)
+    # apq11Shimmer = db.Column(db.Float)

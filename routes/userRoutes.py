@@ -48,7 +48,6 @@ def auth_required(f):
 def create_user():
     user_data = request.json
     device_id = request.headers.get('X-Device-ID')
-    print(device_id,"khgkh")
     if not device_id:
         return jsonify({"message": "Device ID is required"}), 400
         
@@ -155,3 +154,60 @@ def change_password(id):
     if result.modified_count:
         return jsonify({"message": "Password updated successfully"}), 200
     return jsonify({"message": "Failed to update password"}), 500
+
+@user_blueprint.route('/get-profile/<profile_id>', methods=['GET'])
+@auth_required
+def get_profile(profile_id):
+    """Get user profile by ID"""
+    try:
+        # Verify device has access to this profile
+        device_id = request.headers.get('X-Device-ID')
+        device_profile = mongo.db.device_profiles.find_one({
+            'device_id': device_id,
+            'user_id': profile_id
+        })
+        
+        if not device_profile:
+            return jsonify({
+                'message': 'Profile not found or not associated with this device'
+            }), 404
+
+        # Get user data
+        user = mongo.db.users.find_one({'_id': ObjectId(profile_id)})
+        
+        if not user:
+            return jsonify({'message': 'Profile not found'}), 404
+            
+        # Remove sensitive data
+        user.pop('password', None)
+        user['_id'] = str(user['_id'])
+
+        # Get latest health metrics
+        latest_metrics = mongo.db.health_metrics.find_one(
+            {'user_id': profile_id},
+            sort=[('timestamp', -1)]
+        )
+        
+        if latest_metrics:
+            latest_metrics.pop('_id', None)
+            user['latest_metrics'] = latest_metrics
+
+        # Check if this is the active profile for the device
+        is_active = device_profile.get('isActive', False)
+        
+        response_data = {
+            'message': 'Profile retrieved successfully',
+            'user': {
+                **user,
+                'isActive': is_active
+            }
+        }
+        
+        return jsonify(response_data), 200
+        
+    except Exception as e:
+        print(f"Error fetching profile: {str(e)}")
+        return jsonify({
+            'message': 'Error retrieving profile',
+            'error': str(e)
+        }), 500

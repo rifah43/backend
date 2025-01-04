@@ -43,12 +43,19 @@ def add_user(user_data, device_id=None):
     
     user_id = user_collection.insert_one(validated_data).inserted_id
 
+    mongo.db.device_profiles.update_many(
+            {'device_id': device_id},
+            {'$set': {'isActive': False}}
+        )
+
     # If device_id is provided, add to device profiles
     if device_id:
         device_profiles.insert_one({
             "device_id": device_id,
             "user_id": str(user_id),
-        })
+        },
+         {'$set': {'isActive': True}})
+    
 
     return {"message": "User created", "user_id": str(user_id)}, 201
 

@@ -1,97 +1,156 @@
 import os
+import re
 import pandas as pd
 import parselmouth
 from parselmouth.praat import call
+from pydub import AudioSegment
+import sys
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import csv
+from config import Config
 
-def extract_audio_features(file_path, gender):
-    try:
-        sound = parselmouth.Sound(file_path)
+class VoiceFeatureExtractor:
+    def __init__(self):
+        """Initialize the feature extractor"""
+        self.features = {}
         
-        # Set f0min and f0max based on gender
-        if gender.lower() == "female":
-            f0min = 100  # Minimum pitch frequency for females
-            f0max = 300  # Maximum pitch frequency for females
-        elif gender.lower() == "male":
-            f0min = 75   # Minimum pitch frequency for males
-            f0max = 200  # Maximum pitch frequency for males
-        else:
-            raise ValueError("Gender must be 'male' or 'female'.")
+    def parse_filename(self, filename):
+        """
+        Parse participant info from filename
+        Format: age_height_weight_gender_name.opus
+        """
+        try:
+            pattern = r"(\d+)_(\d+)_(\d+)_(male|female)"
+            match = re.match(pattern, filename)
+            
+            if not match:
+                raise ValueError(f"Invalid filename format: {filename}")
+                
+            age = int(match.group(1))
+            height_inches = int(match.group(2))
+            weight_kg = int(match.group(3))
+            gender = match.group(4).lower()
+            
+            # Calculate BMI: weight(kg) / height(m)²
+            height_m = height_inches * 0.0254
+            bmi = round(weight_kg / (height_m * height_m), 2)
+            
+            return {
+                "Age": age,
+                "BMI": bmi,
+                "Gender": gender
+            }
+            
+        except Exception as e:
+            raise Exception(f"Error parsing filename {filename}: {str(e)}")
 
-        # Fundamental frequency (Pitch) and standard deviation
-        pitch = sound.to_pitch()
-        meanF0 = call(pitch, "Get mean", 0, 0, "Hertz")
-        stdevF0 = call(pitch, "Get standard deviation", 0, 0, "Hertz")
-        
-        # Intensity and its standard deviation
-        intensity = sound.to_intensity()
-        meanIntensity = call(intensity, "Get mean", 0, 0)
-        stdevIntensity = call(intensity, "Get standard deviation", 0, 0)
-        
-        # Harmonic Noise Ratio (HNR)
-        harmonicity = sound.to_harmonicity()
-        hnr = call(harmonicity, "Get mean", 0, 0)
-        
-        # Jitter and RAP Jitter
-        pointProcess = call(sound, "To PointProcess (periodic, cc)", f0min, f0max)
-        localJitter = call(pointProcess, "Get jitter (local)", 0, 0, 0.0001, 0.02, 1.3)
-        rapJitter = call(pointProcess, "Get jitter (rap)", 0, 0, 0.0001, 0.02, 1.3)
-        
-        # Shimmer and APQ11 Shimmer
-        localShimmer = call([sound, pointProcess], "Get shimmer (local)", 0, 0, 0.0001, 0.02, 1.3, 1.6)
-        apq11Shimmer = call([sound, pointProcess], "Get shimmer (apq11)", 0, 0, 0.0001, 0.02, 1.3, 1.6)
-        
-        # Phonation Time
-        phonationTime = call(pointProcess, "Get total duration")  # Should only require the PointProcess
-        
-        # Voice Turbulence Index (VTI)
-        vti = sound.to_harmonicity()  # Use harmonicity for VTI
-        meanVTI = call(vti, "Get mean", 0, 0)
+    def extract_features(self, file_path, gender):
+        """Extract acoustic features from voice recording"""
+        try:
+            # Convert audio to wav if needed
+            if not file_path.endswith('.wav'):
+                audio = AudioSegment.from_file(file_path)
+                file_path = self._convert_to_wav(audio)
 
-        features = {
-            "meanF0": meanF0,
-            "stdevF0": stdevF0,
-            "meanIntensity": meanIntensity,
-            "stdevIntensity": stdevIntensity,
-            "hnr": hnr,
-            "localJitter": localJitter,
-            "rapJitter": rapJitter,
-            "localShimmer": localShimmer,
-            "apq11Shimmer": apq11Shimmer,
-            "phonationTime": phonationTime,
-            "meanVTI": meanVTI
-        }
-        
-        return features
-    except Exception as e:
-        print(f"Error extracting audio features from {file_path}: {e}")
-        return None
+            sound = parselmouth.Sound(file_path)
+            
+            # Set pitch range based on gender
+            f0min = 100 if gender == "female" else 75
+            f0max = 300 if gender == "female" else 200
+            
+            # Extract pitch features
+            pitch = sound.to_pitch()
+            self.features['meanF0'] = call(pitch, "Get mean", 0, 0, "Hertz") 
+            self.features['stdevF0'] = call(pitch, "Get standard deviation", 0, 0, "Hertz")
+            
+            # Extract intensity features
+            intensity = sound.to_intensity()
+            self.features['meanInten'] = call(intensity, "Get mean", 0, 0)
+            self.features['stdevInten'] = call(intensity, "Get standard deviation", 0, 0)
+            
+            # Extract harmonicity (HNR)
+            harmonicity = sound.to_harmonicity()
+            self.features['HNR'] = call(harmonicity, "Get mean", 0, 0)
+            
+            # Extract jitter and shimmer variations
+            point_process = call(sound, "To PointProcess (periodic, cc)", f0min, f0max)
+            
+            # Jitter measures
+            self.features['localJitter'] = call(point_process, "Get jitter (local)", 0, 0, 0.0001, 0.02, 1.3)
+            self.features['rapJitter'] = call(point_process, "Get jitter (rap)", 0, 0, 0.0001, 0.02, 1.3)
+            self.features['ppq5Jitter'] = call(point_process, "Get jitter (ppq5)", 0, 0, 0.0001, 0.02, 1.3)
+            
+            # Shimmer measures
+            self.features['localShimmer'] = call([sound, point_process], "Get shimmer (local)", 0, 0, 0.0001, 0.02, 1.3, 1.6)
+            self.features['localDbShimmer'] = call([sound, point_process], "Get shimmer (local_dB)", 0, 0, 0.0001, 0.02, 1.3, 1.6)
+            self.features['apq3Shimmer'] = call([sound, point_process], "Get shimmer (apq3)", 0, 0, 0.0001, 0.02, 1.3, 1.6)
+            self.features['apq5Shimmer'] = call([sound, point_process], "Get shimmer (apq5)", 0, 0, 0.0001, 0.02, 1.3, 1.6)
+            self.features['apq11Shimmer'] = call([sound, point_process], "Get shimmer (apq11)", 0, 0, 0.0001, 0.02, 1.3, 1.6)
+            
+            # Clean up temporary WAV file if created
+            if not file_path.endswith('.wav'):
+                os.remove(file_path)
+                
+            return self.features
 
-def process_folder(folder_path, gender, diagnosis_label):
+        except Exception as e:
+            raise Exception(f"Error extracting features: {str(e)}")
+            
+    def _convert_to_wav(self, audio):
+        """Convert audio to WAV format"""
+        temp_path = "temp.wav"
+        audio.export(temp_path, format="wav")
+        return temp_path
 
-    data = []
-    for root, _, files in os.walk(folder_path):
-        for file in files:
-            if file.endswith('.wav'):  # Assumes audio files are in .wav format
-                file_path = os.path.join(root, file)
-                features = extract_audio_features(file_path, gender)
-                if features:
-                    features['Diagnosis_Label'] = diagnosis_label
-                    data.append(features)
-    
-    return pd.DataFrame(data)
+def process_audio_folder(folder_path, output_csv):
+    """Process all audio files in a folder"""
+    extractor = VoiceFeatureExtractor()
+    all_features = []
+    participant_id = 1
 
-def create_men_tables():
-    # Paths to the folders for men (update paths accordingly)
-    men_non_t2dm_folder = 'path/to/men_non_t2dm'
-    men_t2dm_folder = 'path/to/men_t2dm'
-    
-    # Process each folder
-    men_non_t2dm_df = process_folder(men_non_t2dm_folder, gender='male', diagnosis_label=0)  # 0 for non-T2DM
-    men_t2dm_df = process_folder(men_t2dm_folder, gender='male', diagnosis_label=1)  # 1 for T2DM
-    
-    # Save the DataFrames as CSV files
-    men_non_t2dm_df.to_csv('men_non_t2dm.csv', index=False)
-    men_t2dm_df.to_csv('men_t2dm.csv', index=False)
-    
-    print("Data tables for men created successfully.")
-    return men_non_t2dm_df, men_t2dm_df
+    for filename in os.listdir(folder_path):
+        if filename.lower().endswith(('.wav', '.mp3', '.m4a', '.opus')):
+            file_path = os.path.join(folder_path, filename)
+            
+            try:
+                # Parse participant info from filename
+                participant_info = extractor.parse_filename(filename)
+                
+                # Extract voice features
+                voice_features = extractor.extract_features(file_path, participant_info['Gender'])
+                
+                # Combine all features - setting all diagnoses to T2DM
+                features = {
+                    'ParticipantID': participant_id,
+                    'Age': participant_info['Age'],
+                    'BMI': participant_info['BMI'],
+                    'Gender': participant_info['Gender'],
+                    'Diagnosis': 'T2DM'  # All participants are diabetic
+                }
+                features.update(voice_features)
+                
+                all_features.append(features)
+                participant_id += 1
+                print(f"Processed {filename}")
+                
+            except Exception as e:
+                print(f"Error processing {filename}: {str(e)}")
+                continue
+
+    # Create DataFrame with specific column order
+    columns = ['ParticipantID', 'Age', 'BMI', 'Gender', 'Diagnosis', 
+               'meanF0', 'stdevF0', 'meanInten', 'stdevInten', 'HNR',
+               'localShimmer', 'localDbShimmer', 'apq3Shimmer', 'apq5Shimmer', 'apq11Shimmer',
+               'localJitter', 'rapJitter', 'ppq5Jitter']
+               
+    df = pd.DataFrame(all_features)
+    df = df[columns]  # Reorder columns
+    df.to_csv(output_csv, index=False)
+    print(f"Features saved to {output_csv}")
+
+if __name__ == "__main__":
+    AUDIO_DIR = Config.DATASET_DIR
+    OUTPUT_CSV = os.path.join(AUDIO_DIR, "newdataset.csv")
+    print(f"Processing files in folder: {AUDIO_DIR}")
+    process_audio_folder(AUDIO_DIR, OUTPUT_CSV)
+    print(f"Feature extraction complete. Results saved to: {OUTPUT_CSV}")

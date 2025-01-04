@@ -1,10 +1,12 @@
+import logging
 from flask import Flask
 from routes.featureExtractionRealtime import extract_features_blueprint
 from routes.userRoutes import user_blueprint
 from routes.trendRoutes import trends
+from routes.predict import predict_bp
 from dotenv import load_dotenv
 import os
-from db import init_app, mongo  
+from db import init_app, mongo
 
 load_dotenv()
 
@@ -23,6 +25,7 @@ else:
 app.register_blueprint(extract_features_blueprint)
 app.register_blueprint(user_blueprint)  
 app.register_blueprint(trends)  
+app.register_blueprint(predict_bp)
 
 if __name__ == '__main__':
     port = int(os.getenv("FLASK_RUN_PORT", 5000))
