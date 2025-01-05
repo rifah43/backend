@@ -7,7 +7,7 @@ class Config:
     DATASET_DIR = BASE_DIR / 'dataset'
     MODELS_DIR = BASE_DIR / 'models'
     TEMP_DIR = BASE_DIR / 'temp'
-    COLLECTED_DATA_PATH = DATASET_DIR / 'collected_data.csv'
+    COLLECTED_DATA_PATH = DATASET_DIR / 'newdataset.csv'
     INITIAL_DATA_PATH = DATASET_DIR / 'dataset.csv'
     MODEL_VERSION_FILE = MODELS_DIR / 'version_info.json'
     

@@ -5,125 +5,104 @@ import os
 import pandas as pd
 from datetime import datetime
 from utils.audioProcessing import extract_audio_features
-# from models.trendData import TrendData
-# from db import db
+import logging
 import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config import Config
 
 predict_bp = Blueprint('predict', __name__)
+logger = logging.getLogger(__name__)
 
 class Predictor:
     def __init__(self):
         """Initialize predictor with pre-trained models"""
         try:
+            # Load models
             self.female_model = joblib.load(os.path.join(Config.MODELS_DIR, 'female_model.joblib'))
             self.male_model = joblib.load(os.path.join(Config.MODELS_DIR, 'male_model.joblib'))
             
-            # Log model information for debugging
-            print("Female model features:", self.female_model.n_features_in_)
-            print("Male model features:", self.male_model.n_features_in_)
+            # Load scalers
+            self.female_scaler = joblib.load(os.path.join(Config.MODELS_DIR, 'female_scaler.joblib'))
+            self.male_scaler = joblib.load(os.path.join(Config.MODELS_DIR, 'male_scaler.joblib'))
+            
+            logger.info("Models and scalers loaded successfully")
+            
         except Exception as e:
             raise RuntimeError(f"Failed to load models: {str(e)}")
 
     def predict(self, voice_features, gender, age, bmi):
         """Make T2DM risk prediction based on voice features, gender, age and BMI"""
         try:
-            # Extract voice features based on gender
             if gender.lower() == 'female':
-                # For females: meanF0, stdevF0, age, bmi
-                voice_array = np.array([[
+                # Prepare features for female model
+                features = np.array([[
                     voice_features['meanF0'],
                     voice_features['stdevF0'],
+                    voice_features['rapJitter'],
                     age,
                     bmi
                 ]])
-                model = self.female_model
+                # Scale features
+                features_scaled = self.female_scaler.transform(features)
+                voice_prob = self.female_model.predict_proba(features_scaled)[0][1]
+                
+                # Calculate BMI risk factor
+                bmi_factor = self._calculate_bmi_risk(bmi)
+                
+                # Combine probabilities (as per paper: BMI only for women)
+                final_prob = 0.75 * voice_prob + 0.25 * bmi_factor
+                
             elif gender.lower() == 'male':
-                # For males: meanInten, apq11Shimmer, age, bmi
-                voice_array = np.array([[
+                # Prepare features for male model
+                features = np.array([[
                     voice_features['meanInten'],
                     voice_features['apq11Shimmer'],
                     age,
                     bmi
                 ]])
-                model = self.male_model
+                # Scale features
+                features_scaled = self.male_scaler.transform(features)
+                voice_prob = self.male_model.predict_proba(features_scaled)[0][1]
+                
+                # Calculate risk factors
+                age_factor = self._calculate_age_risk(age)
+                bmi_factor = self._calculate_bmi_risk(bmi)
+                
+                # Combine probabilities (as per paper: both age and BMI for men)
+                final_prob = 0.6 * voice_prob + 0.2 * age_factor + 0.2 * bmi_factor
             else:
                 raise ValueError("Invalid gender specified")
 
-            # Log the feature array for debugging
-            print(f"Input feature array shape: {voice_array.shape}")
-            print(f"Input features: {voice_array}")
-            
-            # Get base probability from voice features
-            voice_probability = model.predict_proba(voice_array)[0][1]
-            
-            # Adjust probability based on age and BMI risk factors
-            age_factor = self._calculate_age_risk(age)
-            bmi_factor = self._calculate_bmi_risk(bmi)
-            
-            # Combine probabilities with weights
-            final_probability = (0.6 * voice_probability + 
-                               0.2 * age_factor + 
-                               0.2 * bmi_factor)
-            
-            return final_probability
+            logger.info(f"Prediction details - Voice prob: {voice_prob:.3f}, Final prob: {final_prob:.3f}")
+            return final_prob
             
         except Exception as e:
-            print(f"Prediction error details: {str(e)}")
-            raise RuntimeError(f"Prediction failed: {str(e)}")
+            logger.error(f"Prediction error: {str(e)}")
+            raise
 
     def _calculate_age_risk(self, age):
-        """Calculate risk factor based on age"""
-        if age < 40:
-            return 0.2
-        elif age < 50:
-            return 0.4
-        elif age < 60:
-            return 0.6
-        else:
-            return 0.8
+        """Calculate risk factor based on age using sigmoid function"""
+        base_age = 40
+        scale = 0.1
+        return 1 / (1 + np.exp(-scale * (age - base_age)))
 
     def _calculate_bmi_risk(self, bmi):
-        """Calculate risk factor based on BMI"""
-        if bmi < 18.5:
-            return 0.3  # Underweight
-        elif bmi < 25:
-            return 0.2  # Normal weight
-        elif bmi < 30:
-            return 0.5  # Overweight
-        else:
-            return 0.8  # Obese
-
-    def _store_prediction(self, features, gender, age, bmi, probability):
-        """Store prediction data for future model updates"""
-        try:
-            data = {
-                'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                'gender': gender,
-                'age': age,
-                'bmi': bmi,
-                'prediction': probability,
-                **features
-            }
-            df = pd.DataFrame([data])
-            
-            
-            df.to_csv(
-                Config.COLLECTED_DATA_PATH, 
-                mode='a', 
-                header=not os.path.exists(Config.COLLECTED_DATA_PATH), 
-                index=False
-            )
-        except Exception as e:
-            raise RuntimeError(f"Failed to store prediction: {str(e)}")
+        """Calculate continuous risk factor based on BMI"""
+        if bmi < 18.5:  # Underweight
+            return 0.3
+        elif bmi < 25:  # Normal
+            return 0.2 + (bmi - 18.5) * 0.02
+        elif bmi < 30:  # Overweight
+            return 0.5 + (bmi - 25) * 0.06
+        else:  # Obese
+            return min(0.8 + (bmi - 30) * 0.01, 1.0)
 
 # Initialize predictor
 predictor = Predictor()
 
 @predict_bp.route('/predict', methods=['POST'])
 def predict():
-    """Endpoint for making T2DM risk predictions from voice recordings with demographic data"""
+    """Endpoint for making T2DM risk predictions from voice recordings"""
     try:
         # Validate required fields
         if 'audio' not in request.files:
@@ -150,15 +129,15 @@ def predict():
             
         # Process audio file
         audio_file = request.files['audio']
-        print(f"Processing audio file: {audio_file.filename}")
+        logger.info(f"Processing audio file: {audio_file.filename}")
         
         try:
             features = extract_audio_features(audio_file, form_data['gender'])
             if not features:
                 return jsonify({'error': 'Failed to extract voice features'}), 400
-            print(f"Extracted features: {features}")
+            logger.info(f"Extracted features: {features}")
         except Exception as e:
-            print(f"Feature extraction error: {str(e)}")
+            logger.error(f"Feature extraction error: {str(e)}")
             return jsonify({'error': f'Failed to extract voice features: {str(e)}'}), 400
         
         # Make prediction
@@ -169,28 +148,10 @@ def predict():
                 age,
                 bmi
             )
-            print(f"Prediction result: {risk_probability}")
+            logger.info(f"Prediction result: {risk_probability}")
         except Exception as e:
-            print(f"Prediction error: {str(e)}")
+            logger.error(f"Prediction error: {str(e)}")
             return jsonify({'error': f'Prediction failed: {str(e)}'}), 500
-        
-        # Store trend data
-        # try:
-        #     trend_data = TrendData(
-        #         user_id=form_data['user_id'],
-        #         risk_probability=float(risk_probability),
-        #         age=age,
-        #         bmi=bmi,
-        #         gender=form_data['gender'],
-        #         **features
-        #     )
-        #     db.session.add(trend_data)
-        #     db.session.commit()
-        # except Exception as e:
-        #     print(f"Database error: {str(e)}")
-        #     db.session.rollback()
-            # Don't return here - still send the prediction result to client
-        
 
         return jsonify({
             'risk_probability': float(risk_probability),
@@ -199,7 +160,7 @@ def predict():
         })
         
     except Exception as e:
-        print(f"Unexpected error: {str(e)}")
+        logger.error(f"Unexpected error: {str(e)}")
         return jsonify({
             'error': f'An unexpected error occurred: {str(e)}'
         }), 500

@@ -70,48 +70,157 @@ def create_user():
         
     return jsonify(result), result[1] if isinstance(result, tuple) else 200
 
-@user_blueprint.route('/login-to-switch', methods=['POST'])
-def login():
-    data = request.json
-    device_id = request.headers.get('X-Device-ID')
-    
-    if not device_id:
-        return jsonify({"message": "Device ID is required"}), 400
-    
-    email = data.get('email')
-    password = data.get('password')
-    
-    if not email or not password:
-        return jsonify({"message": "Email and password are required"}), 400
-    
-    user = verify_password(email, password, device_id)
-    
-    if user:
-        token = jwt.encode({
-            'user_id': str(user[0]['user_id']),
-            'device_id': device_id,
-            'exp': datetime.datetime.utcnow() + datetime.timedelta(days=1)
-        }, SECRET_KEY, algorithm="HS256")
+@user_blueprint.route('/switch-profile', methods=['POST'])
+@auth_required
+def switch_profile():
+    """Switch the active profile for a device"""
+    try:
+        # Get device ID from headers
+        device_id = request.headers.get('X-Device-ID')
+        if not device_id:
+            return jsonify({
+                "error": "X-Device-ID header is required"
+            }), 400
 
+        # Get user ID from request body
+        data = request.get_json()
+        if not data or 'user_id' not in data:
+            return jsonify({
+                "error": "user_id is required in request body"
+            }), 400
+            
+        user_id = data['user_id']
         
-        user['_id'] = str(user['_id'])
-        user.pop('password', None)
+        try:
+            user_id_obj = ObjectId(user_id)
+        except:
+            return jsonify({
+                "error": "Invalid user_id format"
+            }), 400
+
+        device_profiles = mongo.db.device_profiles
+        user_collection = mongo.db.users
+            
+        # First verify the user has a profile for this device
+        profile = device_profiles.find_one({
+            "device_id": device_id,
+            "user_id": user_id
+        })
         
+        if not profile:
+            return jsonify({
+                "error": "Profile not found for this device"
+            }), 404
+
+        try:
+            # Get all user IDs for this device
+            device_user_profiles = device_profiles.find({"device_id": device_id})
+            user_ids = [profile["user_id"] for profile in device_user_profiles]
+            
+            # Set isActive to False for all users of this device
+            user_collection.update_many(
+                {"_id": {"$in": [ObjectId(uid) for uid in user_ids]}},
+                {"$set": {"isActive": False}}
+            )
+            
+            # Set isActive to False for all profiles on this device
+            device_profiles.update_many(
+                {"device_id": device_id},
+                {"$set": {"isActive": False}}
+            )
+            
+            # Set the selected profile and user to active
+            device_profiles.update_one(
+                {
+                    "device_id": device_id,
+                    "user_id": user_id
+                },
+                {"$set": {"isActive": True}}
+            )
+            
+            user_collection.update_one(
+                {"_id": user_id_obj},
+                {"$set": {"isActive": True}}
+            )
+            
+            # Get updated user data
+            updated_user = user_collection.find_one({"_id": user_id_obj})
+            if not updated_user:
+                raise Exception("Failed to fetch updated user data")
+
+            return jsonify({
+                "message": "Profile switched successfully",
+                "user": {
+                    "id": str(updated_user["_id"]),
+                    "name": updated_user.get("name", ""),
+                    "email": updated_user.get("email", ""),
+                    "age": updated_user.get("age"),
+                    "gender": updated_user.get("gender"),
+                    "height": updated_user.get("height"),
+                    "weight": updated_user.get("weight"),
+                    "bmi": updated_user.get("bmi"),
+                    "isActive": True
+                }
+            }), 200
+            
+        except Exception as e:
+            print(f"Database error during profile update: {str(e)}")
+            return jsonify({
+                "error": "Failed to update profile status in database"
+            }), 500
+            
+    except Exception as e:
+        print(f"Server error in switch_profile: {str(e)}")
         return jsonify({
-            "message": "Login successful",
-            "token": token,
-            "user": user
-        }), 200
+            "error": str(e) if str(e) else "An unexpected error occurred"
+        }), 500
     
-    return jsonify({"message": "Invalid email or password"}), 401
-
 @user_blueprint.route('/device-profiles', methods=['GET'])
 @auth_required
 def get_recent_profiles():
-    device_id = request.headers.get('X-Device-ID')
-    profiles = get_device_profiles(device_id)
-    return jsonify(profiles), 200
+    """
+    Endpoint to get recent device profiles.
+    
+    Query Parameters:
+        limit (int): Optional. Number of profiles to return (default: 5)
+    
+    Headers Required:
+        X-Device-ID: Device identifier
+    """
+    try:
+        # Get and validate device_id
+        device_id = request.headers.get('X-Device-ID')
+        if not device_id:
+            return jsonify({
+                "error": "X-Device-ID header is required"
+            }), 400
+            
+            
+        # Get profiles
+        profiles = get_device_profiles(device_id)
+        
+        print(profiles)
 
+        return jsonify({
+            "success": True,
+            "data": {
+                "profiles": profiles,
+                "total": len(profiles)
+            }
+        }), 200
+        
+    except ValueError as e:
+        return jsonify({
+            "error": str(e)
+        }), 400
+        
+    except Exception as e:
+        print(f"Unexpected error in get_recent_profiles: {str(e)}")  # Added logging
+        return jsonify({
+            "error": "An unexpected error occurred",
+            "details": str(e)
+        }), 500
+    
 @user_blueprint.route('/remove-device-profile/<user_id>', methods=['DELETE'])
 @auth_required
 def remove_device_profile(user_id):
