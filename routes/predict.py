@@ -1,9 +1,12 @@
 from flask import Blueprint, request, jsonify
 import joblib
+from marshmallow import ValidationError
 import numpy as np
 import os
 import pandas as pd
 from datetime import datetime
+from db import mongo
+from models.trendData import TrendDataSchema, VoiceFeaturesSchema
 from utils.audioProcessing import extract_audio_features
 import logging
 import sys
@@ -152,11 +155,51 @@ def predict():
         except Exception as e:
             logger.error(f"Prediction error: {str(e)}")
             return jsonify({'error': f'Prediction failed: {str(e)}'}), 500
+         
+        current_time = datetime.utcnow().replace(microsecond=0)
+        timestamp_str = current_time.isoformat()
+        
+        # First validate features
+        try:
+            feature_schema = VoiceFeaturesSchema()
+            validated_features = feature_schema.load(features)
+            logger.info(f"Features validated successfully: {validated_features}")
+        except ValidationError as e:
+            logger.error(f"Feature validation error: {e.messages}")
+            return jsonify({'error': f'Invalid feature data: {e.messages}'}), 400
 
+        # Create trend data with validated features
+        trend_data = {
+            'user_id': form_data['user_id'],
+            'risk_level': float(risk_probability),
+            'features': validated_features,
+            'timestamp': timestamp_str  # Use string timestamp
+        }
+
+        # Validate complete trend data
+        try:
+            trend_schema = TrendDataSchema()
+            validated_trend = trend_schema.load(trend_data)
+            logger.info(f"Trend data validated successfully: {validated_trend}")
+        except ValidationError as e:
+            logger.error(f"Trend data validation error: {e.messages}")
+            return jsonify({'error': f'Invalid trend data: {e.messages}'}), 400
+
+        # Save to database
+        try:
+            result = mongo.db.trend_data.insert_one(validated_trend)
+            if not result.inserted_id:
+                raise Exception("Database insertion failed")
+            logger.info(f"Trend data saved with ID: {result.inserted_id}")
+        except Exception as e:
+            logger.error(f"Database error: {str(e)}")
+            return jsonify({'error': 'Failed to save trend data'}), 500
+
+        # Return success response
         return jsonify({
             'risk_probability': float(risk_probability),
-            'features': features,
-            'timestamp': datetime.now().isoformat()
+            'features': validated_features,
+            'timestamp': timestamp_str
         })
         
     except Exception as e:
@@ -164,3 +207,4 @@ def predict():
         return jsonify({
             'error': f'An unexpected error occurred: {str(e)}'
         }), 500
+    

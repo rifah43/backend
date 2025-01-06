@@ -27,6 +27,7 @@ def auth_required(f):
             try:
                 token = token.split(' ')[1]  
                 data = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
+                print(data)
                 current_user = mongo.db.users.find_one({'_id': ObjectId(data['user_id'])})
                 
                 if not current_user:
@@ -57,7 +58,7 @@ def create_user():
         token = jwt.encode({
             'user_id': str(result[0]['user_id']),
             'device_id': device_id,
-            'exp': datetime.datetime.utcnow() + datetime.timedelta(days=1)
+            'exp': datetie.utcnow() + datetime.timedelta(days=1)
         }, SECRET_KEY, algorithm="HS256")
 
         

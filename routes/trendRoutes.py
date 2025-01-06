@@ -1,147 +1,145 @@
-from datetime import datetime
+from datetime import datetime, timedelta
+import os
 from flask import Blueprint, jsonify, request, current_app
 from marshmallow import ValidationError
 from functools import wraps
 import jwt
-from utils.trendDataProcessing import TrendAnalyzer
+from bson import ObjectId
+from db import mongo
+import numpy as np
+from models.trendData import (
+    TrendData, trend_schema, monthly_analysis_schema
+)
 
 trends = Blueprint('trend_routes', __name__)
 
-def token_required(f):
+def _calculate_trend(values):
+    if len(values) < 2:
+        return 'insufficient_data'
+    
+    slope = np.polyfit(range(len(values)), values, 1)[0]
+    if abs(slope) < 0.001:
+        return 'stable'
+    return 'increasing' if slope > 0 else 'decreasing'
+
+SECRET_KEY = f"{os.getenv('SECRET_KEY')}" 
+
+def auth_required(f):
     @wraps(f)
     def decorated(*args, **kwargs):
+        print(request.headers, 'headers')
         token = request.headers.get('Authorization')
-        if not token:
-            return jsonify({'error': 'Missing authorization token'}), 401
+        device_id = request.headers.get('X-Device-ID')
+        
+        if not device_id:
+            return jsonify({'message': 'Device ID is required'}), 401
+
+        data = None
+        if token:
+            try:
+                token = token.split(' ')[1]  
+                print(token, 'token')
+                data = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
+                print(data)
+                current_user = mongo.db.users.find_one({'_id': ObjectId(data['user_id'])})
+                
+                if not current_user:
+                    return jsonify({'message': 'Invalid token'}), 401
+                    
+            except jwt.ExpiredSignatureError:
+                return jsonify({'message': 'Token has expired'}), 401
+            except jwt.InvalidTokenError:
+                return jsonify({'message': 'Invalid token'}), 401
+        
+        if not data:
+            return jsonify({'message': 'Token is required'}), 401
+        
+        device_exists = mongo.db.device_profiles.find_one({'device_id': device_id})
+        if not device_exists:
+            return jsonify({'message': 'Device not registered'}), 401
             
-        try:
-            if token.startswith('Bearer '):
-                token = token[7:]
-            data = jwt.decode(token, current_app.config['SECRET_KEY'], algorithms=["HS256"])
-            current_user_id = data['user_id']
-        except jwt.ExpiredSignatureError:
-            return jsonify({'error': 'Token has expired'}), 401
-        except jwt.InvalidTokenError:
-            return jsonify({'error': 'Invalid token'}), 401
-            
-        return f(current_user_id, *args, **kwargs)
+        # Pass current_user_id as a keyword argument
+        kwargs['current_user_id'] = data['user_id']
+        
+        return f(*args, **kwargs)
     return decorated
 
-@trends.route('/analyze', methods=['GET'])
-@token_required
-def analyze_trends(current_user_id):
-    """Get trend analysis for user"""
-    timeframe = request.args.get('timeframe', 'monthly')
-    if timeframe not in ['daily', 'weekly', 'monthly']:
-        return jsonify({'error': 'Invalid timeframe. Must be daily, weekly, or monthly'}), 400
-        
-    analyzer = TrendAnalyzer(current_app.db)
-    
+@trends.route('/trends/<user_id>', methods=['GET'])
+def get_user_trends(user_id):
     try:
-        analysis = analyzer.get_trend_analysis(current_user_id, timeframe)
-        if not analysis:
-            return jsonify({'error': 'No trend data available'}), 404
-            
-        return jsonify(analysis), 200
-        
-    except Exception as e:
-        return jsonify({'error': f'Error analyzing trends: {str(e)}'}), 500
+        days = int(request.args.get('days', 30))
+        trends = list(TrendData.get_user_trends(user_id, days))
 
-@trends.route('/prediction', methods=['POST'])
-@token_required
-def create_prediction(current_user_id):
-    """Create new voice prediction and update trends"""
-    try:
-        data = request.get_json()
-        
-        if not all(k in data for k in ['features', 'risk_probability', 'gender']):
-            return jsonify({'error': 'Missing required fields'}), 400
-            
-        analyzer = TrendAnalyzer(current_app.db)
-        result = analyzer.analyze_prediction(
-            features=data['features'],
-            risk_probability=data['risk_probability'],
-            gender=data['gender']
-        )
-        
-        return jsonify(result), 201
-        
+        if not trends:
+            return jsonify({'message': 'No trend data available'}), 404
+
+        # Convert timestamps to ISO format strings for response
+        formatted_trends = []
+        for trend in trends:
+            trend_copy = trend.copy()
+            if isinstance(trend_copy['timestamp'], datetime):
+                trend_copy['timestamp'] = trend_copy['timestamp'].isoformat()
+            formatted_trends.append(trend_copy)
+
+        risk_values = [t['risk_level'] for t in trends]
+        trend_data = {
+            'trend_data': formatted_trends,
+            'statistics': {
+                'average_risk': float(np.mean(risk_values)),
+                'std_dev': float(np.std(risk_values)),
+                'trend_direction': _calculate_trend(risk_values),
+                'min_risk': float(min(risk_values)),
+                'max_risk': float(max(risk_values)),
+                'total_recordings': len(trends)
+            }
+        }
+
+        result = trend_schema.dump(trend_data)
+        return jsonify(result)
+
     except ValidationError as err:
-        return jsonify({'error': 'Validation error', 'details': err.messages}), 400
+        return jsonify(err.messages), 400
     except Exception as e:
-        return jsonify({'error': f'Error processing prediction: {str(e)}'}), 500
+        return jsonify({'error': str(e)}), 500 
 
-@trends.route('/monthly/<month>', methods=['GET'])
-@token_required
-def get_monthly_trend(current_user_id, month):
-    """Get monthly trend summary"""
+@trends.route('/trends/monthly-analysis/<user_id>', methods=['GET'])
+# @auth_required
+def get_monthly_analysis( user_id):
     try:
-        month_format = '%Y-%m'
-        # Validate month format
-        try:
-            datetime.strptime(month, month_format)
-        except ValueError:
-            return jsonify({'error': 'Invalid month format. Use YYYY-MM'}), 400
-            
-        monthly_trend = current_app.db.monthly_trends.find_one({
-            "user_id": current_user_id,
-            "month": month
-        })
-        
-        if not monthly_trend:
-            return jsonify({'error': 'No trend data available for specified month'}), 404
-            
-        # Remove MongoDB _id field
-        monthly_trend.pop('_id', None)
-        return jsonify(monthly_trend), 200
-        
-    except Exception as e:
-        return jsonify({'error': f'Error fetching monthly trend: {str(e)}'}), 500
+        user = mongo.db.users.find_one({'_id': ObjectId(user_id)})
+        if not user:
+            return jsonify({'error': 'User not found'}), 404
 
-@trends.route('/compliance', methods=['GET'])
-@token_required
-def get_compliance_stats(current_user_id):
-    """Get recording compliance statistics"""
-    timeframe = request.args.get('timeframe', 'monthly')
-    if timeframe not in ['daily', 'weekly', 'monthly']:
-        return jsonify({'error': 'Invalid timeframe'}), 400
-        
-    try:
-        analyzer = TrendAnalyzer(current_app.db)
-        analysis = analyzer.get_trend_analysis(current_user_id, timeframe)
-        
-        if not analysis:
-            return jsonify({'error': 'No compliance data available'}), 404
-            
-        return jsonify(analysis['compliance']), 200
-        
-    except Exception as e:
-        return jsonify({'error': f'Error fetching compliance stats: {str(e)}'}), 500
+        gender = user.get('gender', '').lower()
+        trends = list(TrendData.get_user_trends(user_id, 30))
 
-@trends.route('/time-series', methods=['GET'])
-@token_required
-def get_time_series_data(current_user_id):
-    """Get time series data for visualization"""
-    timeframe = request.args.get('timeframe', 'monthly')
-    if timeframe not in ['daily', 'weekly', 'monthly']:
-        return jsonify({'error': 'Invalid timeframe'}), 400
-        
-    try:
-        analyzer = TrendAnalyzer(current_app.db)
-        analysis = analyzer.get_trend_analysis(current_user_id, timeframe)
-        
-        if not analysis:
-            return jsonify({'error': 'No time series data available'}), 404
-            
-        return jsonify(analysis['time_series']), 200
-        
-    except Exception as e:
-        return jsonify({'error': f'Error fetching time series data: {str(e)}'}), 500
+        if not trends:
+            return jsonify({'message': 'No data available for analysis'}), 404
 
-@trends.errorhandler(Exception)
-def handle_error(error):
-    """Global error handler for trend routes"""
-    return jsonify({
-        "error": "Internal server error",
-        "message": str(error)
-    }), 500
+        features_to_analyze = ['meanF0', 'stdevF0', 'rapJitter'] if gender == 'female' else ['meanInten', 'apq11Shimmer']
+        feature_stats = {
+            feature: {
+                'average': np.mean([t['features'].get(feature, 0) for t in trends]),
+                'std_dev': np.std([t['features'].get(feature, 0) for t in trends]),
+                'trend': _calculate_trend([t['features'].get(feature, 0) for t in trends])
+            } for feature in features_to_analyze
+        }
+
+        analysis_data = {
+            'monthly_analysis': {
+                'feature_statistics': feature_stats,
+                'recording_count': len(trends),
+                'date_range': {
+                    'start': trends[0]['timestamp'] if trends else None,
+                    'end': trends[-1]['timestamp'] if trends else None
+                }
+            }
+        }
+
+        result = monthly_analysis_schema.dump(analysis_data)
+        return jsonify(result)
+
+    except ValidationError as err:
+        return jsonify(err.messages), 400
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
