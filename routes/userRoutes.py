@@ -58,7 +58,7 @@ def create_user():
         token = jwt.encode({
             'user_id': str(result[0]['user_id']),
             'device_id': device_id,
-            'exp': datetie.utcnow() + datetime.timedelta(days=1)
+            'exp': datetime.utcnow() + datetime.timedelta(days=1)
         }, SECRET_KEY, algorithm="HS256")
 
         
