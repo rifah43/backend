@@ -1,16 +1,14 @@
 import pandas as pd
 import numpy as np
+from sklearn.model_selection import cross_validate, RepeatedStratifiedKFold
+from sklearn.preprocessing import StandardScaler
+from sklearn.ensemble import RandomForestClassifier, VotingClassifier, StackingClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.naive_bayes import GaussianNB
-from sklearn.model_selection import cross_val_score, StratifiedKFold, GridSearchCV
-from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import classification_report
-from sklearn.impute import SimpleImputer
-from imblearn.over_sampling import SMOTE
 import logging
 import joblib
 import os
-from datetime import datetime
 import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config import Config
@@ -18,149 +16,187 @@ from config import Config
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-class T2DMPredictor:
-    def __init__(self):
-        """Initialize predictor with gender-specific models and scalers"""
-        self.female_model = LogisticRegression(max_iter=1000, class_weight='balanced', random_state=42)
-        self.female_scaler = StandardScaler()
-        self.male_model = GaussianNB()
-        self.male_scaler = StandardScaler()
-        self.female_imputer = SimpleImputer(strategy='mean')
-        self.male_imputer = SimpleImputer(strategy='mean')
-        self.models_dir = Config.MODELS_DIR
-        os.makedirs(self.models_dir, exist_ok=True)
+class EnhancedT2DMPredictor:
+   def __init__(self):
+       """Initialize gender-specific models and features"""
+       # Define feature sets
+       self.female_features = [
+           'stdevF0', 'meanF0', 'rapJitter', 'meanInten',
+           'localDbShimmer', 'apq5Shimmer', 'apq11Shimmer'
+       ]
+       
+       self.male_features = [
+           'meanInten', 'apq11Shimmer', 'stdevInten', 'ppq5Jitter',
+           'localJitter', 'localDbShimmer', 'localShimmer'
+       ]
+       
+       # Initialize models
+       self.female_clf = VotingClassifier([
+           ('lr', LogisticRegression(max_iter=1000)),
+           ('rf', RandomForestClassifier(n_estimators=100, random_state=42)),
+           ('nb', GaussianNB())
+       ], voting='soft')
+       
+       self.male_clf = StackingClassifier([
+           ('nb', GaussianNB()),
+           ('rf', RandomForestClassifier(n_estimators=100, random_state=42))
+       ], final_estimator=LogisticRegression())
+       
+       # Initialize scalers
+       self.female_scaler = StandardScaler()
+       self.male_scaler = StandardScaler()
+       
+       self.models_dir = Config.MODELS_DIR
+       os.makedirs(self.models_dir, exist_ok=True)
 
-    def _preprocess_data(self, data_path):
-        """Load and preprocess data from CSV file"""
-        try:
-            # Load data
-            df = pd.read_csv(data_path)
-            logger.info(f"Loaded dataset with {len(df)} entries")
+   def engineer_features(self, X):
+       """Create engineered features from voice parameters"""
+       X_eng = X.copy()
+       
+       # Feature ratios and combinations
+       X_eng['pitch_intensity_ratio'] = X_eng['meanF0'] / X_eng['meanInten']
+       X_eng['jitter_shimmer_ratio'] = X_eng['rapJitter'] / X_eng['localShimmer']
+       X_eng['voice_irregularity'] = X_eng['stdevF0'] * X_eng['stdevInten']
+       
+       # Aggregated shimmer/jitter features
+       X_eng['mean_shimmer'] = X_eng[['localShimmer', 'apq3Shimmer', 'apq5Shimmer', 'apq11Shimmer']].mean(axis=1)
+       X_eng['mean_jitter'] = X_eng[['localJitter', 'rapJitter', 'ppq5Jitter']].mean(axis=1)
+       
+       return X_eng
 
-            # Check for missing values
-            missing_values = df.isnull().sum()
-            logger.info(f"Missing values per column:\n{missing_values}")
+   def _preprocess_data(self, data_path):
+    try:
+        df = pd.read_csv(data_path)
+        logger.info(f"Loaded dataset with {len(df)} entries")
 
-            # Ensure required columns exist
-            required_columns = ['meanF0', 'stdevF0', 'rapJitter', 'meanInten', 
-                              'apq11Shimmer', 'Age', 'BMI', 'Gender', 'Diagnosis']
-            missing_columns = [col for col in required_columns if col not in df.columns]
-            if missing_columns:
-                raise ValueError(f"Missing columns in dataset: {missing_columns}")
+        # Split by gender and select only numeric columns
+        female_data = df[df['Gender'].str.lower() == 'female']
+        male_data = df[df['Gender'].str.lower() == 'male']
+        
+        logger.info(f"Female samples: {len(female_data)}, Male samples: {len(male_data)}")
 
-            # Clean data
-            df = df.dropna(subset=['Gender', 'Diagnosis'])  # Must have these values
-            df['Gender'] = df['Gender'].str.capitalize()
-            df['Diagnosis'] = df['Diagnosis'].str.upper()
-            
-            logger.info(f"Data shape after cleaning: {df.shape}")
+        # Select only numeric features
+        numeric_cols = ['meanF0', 'stdevF0', 'meanInten', 'stdevInten', 'HNR', 
+                       'localShimmer', 'localDbShimmer', 'apq3Shimmer', 'apq5Shimmer',  
+                       'apq11Shimmer', 'localJitter', 'rapJitter', 'ppq5Jitter',
+                       'Age', 'BMI']
 
-            # Split data by gender
-            female_data = df[df['Gender'] == 'Female']
-            male_data = df[df['Gender'] == 'Male']
+        X_f = female_data[numeric_cols].apply(pd.to_numeric, errors='coerce')
+        X_m = male_data[numeric_cols].apply(pd.to_numeric, errors='coerce')
 
-            logger.info(f"Female samples: {len(female_data)}, Male samples: {len(male_data)}")
+        # Fill missing values with mean
+        X_f = X_f.fillna(X_f.mean())
+        X_m = X_m.fillna(X_m.mean())
 
-            return female_data, male_data
+        # Engineer features
+        for X in [X_f, X_m]:
+            X['pitch_intensity_ratio'] = X['meanF0'] / X['meanInten']
+            X['jitter_shimmer_ratio'] = X['rapJitter'] / X['localShimmer']
+            X['voice_irregularity'] = X['stdevF0'] * X['stdevInten']
+            X['mean_shimmer'] = X[['localShimmer', 'apq3Shimmer', 'apq5Shimmer', 'apq11Shimmer']].mean(axis=1)
+            X['mean_jitter'] = X[['localJitter', 'rapJitter', 'ppq5Jitter']].mean(axis=1)
+            X['Age_risk'] = X['Age'].apply(self._calculate_age_risk)
+            X['BMI_risk'] = X['BMI'].apply(self._calculate_bmi_risk)
 
-        except Exception as e:
-            logger.error(f"Error in data preprocessing: {str(e)}")
-            raise
+        # Drop original Age and BMI columns
+        X_f = X_f.drop(['Age', 'BMI'], axis=1)
+        X_m = X_m.drop(['Age', 'BMI'], axis=1)
 
-    def train(self, data_path):
-        """Train gender-specific models using the paper's methodology"""
-        try:
-            # Load and preprocess data
-            female_data, male_data = self._preprocess_data(data_path)
-            
-            # Train female model
-            logger.info("Training female model")
-            X_f = female_data[['meanF0', 'stdevF0', 'rapJitter', 'Age', 'BMI']]
-            y_f = (female_data['Diagnosis'] == 'T2DM').astype(int)
-            
-            # Handle missing values
-            X_f_imputed = self.female_imputer.fit_transform(X_f)
-            logger.info(f"Female data shape after imputation: {X_f_imputed.shape}")
-            
-            # Scale features
-            X_f_scaled = self.female_scaler.fit_transform(X_f_imputed)
-            
-            # Apply SMOTE
-            smote = SMOTE(random_state=42)
-            X_f_balanced, y_f_balanced = smote.fit_resample(X_f_scaled, y_f)
-            logger.info(f"Female data shape after SMOTE: {X_f_balanced.shape}")
-            
-            # Train and evaluate female model
-            self.female_model.fit(X_f_balanced, y_f_balanced)
-            female_scores = self._evaluate_model(X_f_balanced, y_f_balanced, 
-                                               self.female_model, "Female")
+        # Extract labels
+        y_f = (female_data['Diagnosis'].str.upper() == 'T2DM').astype(int)
+        y_m = (male_data['Diagnosis'].str.upper() == 'T2DM').astype(int)
 
-            # Train male model
-            logger.info("Training male model")
-            X_m = male_data[['meanInten', 'apq11Shimmer', 'Age', 'BMI']]
-            y_m = (male_data['Diagnosis'] == 'T2DM').astype(int)
-            
-            # Handle missing values
-            X_m_imputed = self.male_imputer.fit_transform(X_m)
-            logger.info(f"Male data shape after imputation: {X_m_imputed.shape}")
-            
-            # Scale features
-            X_m_scaled = self.male_scaler.fit_transform(X_m_imputed)
-            
-            # Apply SMOTE
-            X_m_balanced, y_m_balanced = smote.fit_resample(X_m_scaled, y_m)
-            logger.info(f"Male data shape after SMOTE: {X_m_balanced.shape}")
-            
-            # Train and evaluate male model
-            self.male_model.fit(X_m_balanced, y_m_balanced)
-            male_scores = self._evaluate_model(X_m_balanced, y_m_balanced, 
-                                             self.male_model, "Male")
+        return (X_f, y_f), (X_m, y_m)
 
-            # Save models and preprocessing components
-            self._save_models()
+    except Exception as e:
+        logger.error(f"Error in data preprocessing: {str(e)}")
+        raise
+    
+   def train(self, data_path):
+       """Train gender-specific models"""
+       (X_f, y_f), (X_m, y_m) = self._preprocess_data(data_path)
+       
+       # Train female model
+       X_f_scaled = self.female_scaler.fit_transform(X_f)
+       self.female_clf.fit(X_f_scaled, y_f)
+       
+       # Evaluate female model
+       female_scores = self.evaluate_model(self.female_clf, X_f_scaled, y_f, "Female")
+       
+       # Train male model
+       X_m_scaled = self.male_scaler.fit_transform(X_m)
+       self.male_clf.fit(X_m_scaled, y_m)
+       
+       # Evaluate male model
+       male_scores = self.evaluate_model(self.male_clf, X_m_scaled, y_m, "Male")
+       
+       self._save_models()
+       
+       return female_scores, male_scores
 
-            return {
-                'female_accuracy': female_scores.mean(),
-                'female_std': female_scores.std(),
-                'male_accuracy': male_scores.mean(),
-                'male_std': male_scores.std()
-            }
+   def evaluate_model(self, model, X, y, gender):
+       """Evaluate model using repeated cross-validation"""
+       cv = RepeatedStratifiedKFold(n_splits=5, n_repeats=3, random_state=42)
+       
+       scores = cross_validate(model, X, y,
+                             scoring=['accuracy', 'precision', 'recall', 'f1'],
+                             cv=cv)
+       
+       logger.info(f"\n{gender} Model Performance:")
+       logger.info(f"Accuracy: {scores['test_accuracy'].mean():.3f} ± {scores['test_accuracy'].std():.3f}")
+       logger.info(f"Precision: {scores['test_precision'].mean():.3f} ± {scores['test_precision'].std():.3f}")
+       logger.info(f"Recall: {scores['test_recall'].mean():.3f} ± {scores['test_recall'].std():.3f}")
+       logger.info(f"F1: {scores['test_f1'].mean():.3f} ± {scores['test_f1'].std():.3f}")
+       
+       return scores
 
-        except Exception as e:
-            logger.error(f"Error in training: {str(e)}")
-            raise
+   def predict(self, features, gender):
+       """Make prediction for single recording"""
+       features_eng = self.engineer_features(pd.DataFrame([features]))
+       
+       # Add demographic risk scores
+       features_eng['Age_risk'] = self._calculate_age_risk(features['Age'])
+       features_eng['BMI_risk'] = self._calculate_bmi_risk(features['BMI'])
+       
+       if gender == 'Female':
+           scaled_features = self.female_scaler.transform(features_eng)
+           pred_proba = self.female_clf.predict_proba(scaled_features)[0][1]
+           return pred_proba >= 0.54  # Female threshold from paper
+       else:
+           scaled_features = self.male_scaler.transform(features_eng)
+           pred_proba = self.male_clf.predict_proba(scaled_features)[0][1]
+           return pred_proba >= 0.46  # Male threshold from paper
 
-    def _evaluate_model(self, X, y, model, gender):
-        """Evaluate model using 5-fold cross-validation"""
-        cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
-        scores = cross_val_score(model, X, y, cv=cv)
-        logger.info(f"{gender} model accuracy (5-fold CV): {scores.mean():.2f} ± {scores.std():.2f}")
-        return scores
+   def _calculate_age_risk(self, age):
+       """Calculate T2DM risk based on age"""
+       if age < 40: return 0.1
+       elif age < 50: return 0.2
+       elif age < 60: return 0.3
+       else: return 0.4
 
-    def _save_models(self):
-        """Save trained models and preprocessing components"""
-        try:
-            # Save models and components
-            joblib.dump(self.female_model, os.path.join(self.models_dir, 'female_model.joblib'))
-            joblib.dump(self.male_model, os.path.join(self.models_dir, 'male_model.joblib'))
-            joblib.dump(self.female_scaler, os.path.join(self.models_dir, 'female_scaler.joblib'))
-            joblib.dump(self.male_scaler, os.path.join(self.models_dir, 'male_scaler.joblib'))
-            joblib.dump(self.female_imputer, os.path.join(self.models_dir, 'female_imputer.joblib'))
-            joblib.dump(self.male_imputer, os.path.join(self.models_dir, 'male_imputer.joblib'))
-            logger.info("Models and preprocessing components saved successfully")
-        except Exception as e:
-            logger.error(f"Error saving models: {str(e)}")
-            raise
+   def _calculate_bmi_risk(self, bmi):
+       """Calculate T2DM risk based on BMI"""
+       if bmi < 18.5: return 0.1
+       elif bmi < 25: return 0.2
+       elif bmi < 30: return 0.3
+       elif bmi < 35: return 0.4
+       else: return 0.5
+
+   def _save_models(self):
+       """Save trained models and scalers"""
+       joblib.dump(self.female_clf, os.path.join(self.models_dir, 'female_model.joblib'))
+       joblib.dump(self.male_clf, os.path.join(self.models_dir, 'male_model.joblib'))
+       joblib.dump(self.female_scaler, os.path.join(self.models_dir, 'female_scaler.joblib'))
+       joblib.dump(self.male_scaler, os.path.join(self.models_dir, 'male_scaler.joblib'))
+       logger.info("Models saved successfully")
 
 def main():
-    """Main function to train models"""
-    try:
-        predictor = T2DMPredictor()
-        results = predictor.train(Config.INITIAL_DATA_PATH)
-        logger.info(f"Training completed with accuracies: {results}")
-    except Exception as e:
-        logger.error(f"Error in main execution: {str(e)}")
-        raise
+   predictor = EnhancedT2DMPredictor()
+   female_scores, male_scores = predictor.train(Config.INITIAL_DATA_PATH)
+   
+   logger.info("\nTraining Complete")
+   logger.info(f"Female Model Mean Accuracy: {female_scores['test_accuracy'].mean():.3f}")
+   logger.info(f"Male Model Mean Accuracy: {male_scores['test_accuracy'].mean():.3f}")
 
 if __name__ == "__main__":
-    main()
+   main()

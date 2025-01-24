@@ -18,60 +18,56 @@ logger = logging.getLogger(__name__)
 
 class Predictor:
     def __init__(self):
-        """Initialize predictor with pre-trained models"""
         try:
-            # Load models
             self.female_model = joblib.load(os.path.join(Config.MODELS_DIR, 'female_model.joblib'))
             self.male_model = joblib.load(os.path.join(Config.MODELS_DIR, 'male_model.joblib'))
-            
-            # Load scalers
             self.female_scaler = joblib.load(os.path.join(Config.MODELS_DIR, 'female_scaler.joblib'))
             self.male_scaler = joblib.load(os.path.join(Config.MODELS_DIR, 'male_scaler.joblib'))
-            
             logger.info("Models and scalers loaded successfully")
-            
         except Exception as e:
             raise RuntimeError(f"Failed to load models: {str(e)}")
 
+    def _engineer_features(self, voice_features, age, bmi):
+        """Create engineered features matching the training data structure"""
+        features = {
+            'meanF0': voice_features['meanF0'],
+            'stdevF0': voice_features['stdevF0'],
+            'meanInten': voice_features['meanInten'],
+            'stdevInten': voice_features['stdevInten'],
+            'HNR': voice_features['hnr'],
+            'localShimmer': voice_features['localShimmer'],
+            'localDbShimmer': voice_features.get('localDbShimmer', 0),
+            'apq3Shimmer': voice_features.get('apq3Shimmer', 0),
+            'apq5Shimmer': voice_features.get('apq5Shimmer', 0),
+            'apq11Shimmer': voice_features['apq11Shimmer'],
+            'localJitter': voice_features['localJitter'],
+            'rapJitter': voice_features['rapJitter'],
+            'ppq5Jitter': voice_features.get('ppq5Jitter', 0),
+            'pitch_intensity_ratio': voice_features['meanF0'] / voice_features['meanInten'],
+            'jitter_shimmer_ratio': voice_features['rapJitter'] / voice_features['localShimmer'],
+            'voice_irregularity': voice_features['stdevF0'] * voice_features['stdevInten'],
+            'mean_shimmer': (voice_features['localShimmer'] + voice_features['apq11Shimmer']) / 2,
+            'mean_jitter': (voice_features['localJitter'] + voice_features['rapJitter']) / 2,
+            'Age_risk': self._calculate_age_risk(age),
+            'BMI_risk': self._calculate_bmi_risk(bmi)
+        }
+        return np.array([[v for v in features.values()]])
+
     def predict(self, voice_features, gender, age, bmi):
-        """Make T2DM risk prediction based on voice features, gender, age and BMI"""
         try:
+            features = self._engineer_features(voice_features, age, bmi)
+            
             if gender.lower() == 'female':
-                # Prepare features for female model
-                features = np.array([[
-                    voice_features['meanF0'],
-                    voice_features['stdevF0'],
-                    voice_features['rapJitter'],
-                    age,
-                    bmi
-                ]])
-                # Scale features
                 features_scaled = self.female_scaler.transform(features)
                 voice_prob = self.female_model.predict_proba(features_scaled)[0][1]
-                
-                # Calculate BMI risk factor
                 bmi_factor = self._calculate_bmi_risk(bmi)
-                
-                # Combine probabilities (as per paper: BMI only for women)
                 final_prob = 0.75 * voice_prob + 0.25 * bmi_factor
                 
             elif gender.lower() == 'male':
-                # Prepare features for male model
-                features = np.array([[
-                    voice_features['meanInten'],
-                    voice_features['apq11Shimmer'],
-                    age,
-                    bmi
-                ]])
-                # Scale features
                 features_scaled = self.male_scaler.transform(features)
                 voice_prob = self.male_model.predict_proba(features_scaled)[0][1]
-                
-                # Calculate risk factors
                 age_factor = self._calculate_age_risk(age)
                 bmi_factor = self._calculate_bmi_risk(bmi)
-                
-                # Combine probabilities (as per paper: both age and BMI for men)
                 final_prob = 0.6 * voice_prob + 0.2 * age_factor + 0.2 * bmi_factor
             else:
                 raise ValueError("Invalid gender specified")
@@ -84,20 +80,18 @@ class Predictor:
             raise
 
     def _calculate_age_risk(self, age):
-        """Calculate risk factor based on age using sigmoid function"""
         base_age = 40
         scale = 0.1
         return 1 / (1 + np.exp(-scale * (age - base_age)))
 
     def _calculate_bmi_risk(self, bmi):
-        """Calculate continuous risk factor based on BMI"""
-        if bmi < 18.5:  # Underweight
+        if bmi < 18.5:
             return 0.3
-        elif bmi < 25:  # Normal
+        elif bmi < 25:
             return 0.2 + (bmi - 18.5) * 0.02
-        elif bmi < 30:  # Overweight
+        elif bmi < 30:
             return 0.5 + (bmi - 25) * 0.06
-        else:  # Obese
+        else:
             return min(0.8 + (bmi - 30) * 0.01, 1.0)
 
 # Initialize predictor
