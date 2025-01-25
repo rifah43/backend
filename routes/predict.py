@@ -19,17 +19,19 @@ logger = logging.getLogger(__name__)
 class Predictor:
     def __init__(self):
         try:
-            self.female_model = joblib.load(os.path.join(Config.MODELS_DIR, 'female_model.joblib'))
-            self.male_model = joblib.load(os.path.join(Config.MODELS_DIR, 'male_model.joblib'))
-            self.female_scaler = joblib.load(os.path.join(Config.MODELS_DIR, 'female_scaler.joblib'))
-            self.male_scaler = joblib.load(os.path.join(Config.MODELS_DIR, 'male_scaler.joblib'))
-            logger.info("Models and scalers loaded successfully")
+            models_dir = Config.MODELS_DIR
+            self.female_clf = joblib.load(os.path.join(models_dir, 'female_model.joblib'))
+            self.male_clf = joblib.load(os.path.join(models_dir, 'male_model.joblib'))
+            self.female_scaler = joblib.load(os.path.join(models_dir, 'female_scaler.joblib'))
+            self.male_scaler = joblib.load(os.path.join(models_dir, 'male_scaler.joblib'))
+            self.male_feature_selector = joblib.load(os.path.join(models_dir, 'male_feature_selector.joblib'))
+            logger.info("Models and preprocessing components loaded successfully")
         except Exception as e:
             raise RuntimeError(f"Failed to load models: {str(e)}")
 
-    def _engineer_features(self, voice_features, age, bmi):
-        """Create engineered features matching the training data structure"""
-        features = {
+    def _preprocess_features(self, voice_features):
+        """Convert voice features to match training data structure"""
+        return {
             'meanF0': voice_features['meanF0'],
             'stdevF0': voice_features['stdevF0'],
             'meanInten': voice_features['meanInten'],
@@ -42,57 +44,54 @@ class Predictor:
             'apq11Shimmer': voice_features['apq11Shimmer'],
             'localJitter': voice_features['localJitter'],
             'rapJitter': voice_features['rapJitter'],
-            'ppq5Jitter': voice_features.get('ppq5Jitter', 0),
-            'pitch_intensity_ratio': voice_features['meanF0'] / voice_features['meanInten'],
-            'jitter_shimmer_ratio': voice_features['rapJitter'] / voice_features['localShimmer'],
-            'voice_irregularity': voice_features['stdevF0'] * voice_features['stdevInten'],
-            'mean_shimmer': (voice_features['localShimmer'] + voice_features['apq11Shimmer']) / 2,
-            'mean_jitter': (voice_features['localJitter'] + voice_features['rapJitter']) / 2,
-            'Age_risk': self._calculate_age_risk(age),
-            'BMI_risk': self._calculate_bmi_risk(bmi)
+            'ppq5Jitter': voice_features.get('ppq5Jitter', 0)
         }
-        return np.array([[v for v in features.values()]])
+
+    def _calculate_age_risk(self, age):
+        """Calculate age-based risk factor"""
+        if age < 40: return 0.1
+        elif age < 50: return 0.2
+        elif age < 60: return 0.3
+        else: return 0.4
+
+    def _calculate_bmi_risk(self, bmi):
+        """Calculate BMI-based risk factor"""
+        if bmi < 18.5: return 0.1
+        elif bmi < 25: return 0.2
+        elif bmi < 30: return 0.3
+        elif bmi < 35: return 0.4
+        else: return 0.5
 
     def predict(self, voice_features, gender, age, bmi):
+    
         try:
-            features = self._engineer_features(voice_features, age, bmi)
+            features = self._preprocess_features(voice_features)
+            features['Age_risk'] = self._calculate_age_risk(age)
+            features['BMI_risk'] = self._calculate_bmi_risk(bmi)
+            X = np.array([[v for v in features.values()]])
             
             if gender.lower() == 'female':
-                features_scaled = self.female_scaler.transform(features)
-                voice_prob = self.female_model.predict_proba(features_scaled)[0][1]
-                bmi_factor = self._calculate_bmi_risk(bmi)
-                final_prob = 0.75 * voice_prob + 0.25 * bmi_factor
+                X_scaled = self.female_scaler.transform(X)
+                risk_prob = self.female_clf.predict_proba(X_scaled)[0][1]
                 
             elif gender.lower() == 'male':
-                features_scaled = self.male_scaler.transform(features)
-                voice_prob = self.male_model.predict_proba(features_scaled)[0][1]
-                age_factor = self._calculate_age_risk(age)
-                bmi_factor = self._calculate_bmi_risk(bmi)
-                final_prob = 0.6 * voice_prob + 0.2 * age_factor + 0.2 * bmi_factor
+                X_selected = self.male_feature_selector.transform(X)
+                X_scaled = self.male_scaler.transform(X_selected)
+                risk_prob = self.male_clf.predict_proba(X_scaled)[0][1]
+                
             else:
                 raise ValueError("Invalid gender specified")
-
-            logger.info(f"Prediction details - Voice prob: {voice_prob:.3f}, Final prob: {final_prob:.3f}")
-            return final_prob
+            
+            logger.info(f"Prediction completed - Risk probability: {risk_prob:.3f}")
+            return float(risk_prob)
             
         except Exception as e:
             logger.error(f"Prediction error: {str(e)}")
             raise
-
-    def _calculate_age_risk(self, age):
-        base_age = 40
-        scale = 0.1
-        return 1 / (1 + np.exp(-scale * (age - base_age)))
-
-    def _calculate_bmi_risk(self, bmi):
-        if bmi < 18.5:
-            return 0.3
-        elif bmi < 25:
-            return 0.2 + (bmi - 18.5) * 0.02
-        elif bmi < 30:
-            return 0.5 + (bmi - 25) * 0.06
-        else:
-            return min(0.8 + (bmi - 30) * 0.01, 1.0)
+            
+        except Exception as e:
+            logger.error(f"Prediction error: {str(e)}")
+            raise
 
 # Initialize predictor
 predictor = Predictor()
