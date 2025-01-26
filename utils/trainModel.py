@@ -113,17 +113,17 @@ class EnhancedT2DMPredictor:
         return scores
 
     def _calculate_age_risk(self, age):
-        if age < 40: return 0.1
-        elif age < 50: return 0.2
-        elif age < 60: return 0.3
-        else: return 0.4
+        if age < 40: return 0.01
+        elif age < 50: return 0.012
+        elif age < 60: return 0.015
+        else: return 0.02
 
     def _calculate_bmi_risk(self, bmi):
-        if bmi < 18.5: return 0.1
-        elif bmi < 25: return 0.2
-        elif bmi < 30: return 0.3
-        elif bmi < 35: return 0.4
-        else: return 0.5
+        if bmi < 18.5: return 0.01
+        elif bmi < 25: return 0.013
+        elif bmi < 30: return 0.015
+        elif bmi < 35: return 0.018
+        else: return 0.02
 
     def _save_models(self):
         """Save trained models and scalers."""

@@ -8,3 +8,4 @@ scikit_learn
 pandas
 tensorflow
 Flask-PyMongo
+marshmallow

@@ -3,7 +3,6 @@ import os
 from flask import Blueprint, jsonify, request, current_app
 from marshmallow import ValidationError
 from functools import wraps
-import jwt
 from bson import ObjectId
 from db import mongo
 import numpy as np
@@ -27,40 +26,14 @@ SECRET_KEY = f"{os.getenv('SECRET_KEY')}"
 def auth_required(f):
     @wraps(f)
     def decorated(*args, **kwargs):
-        print(request.headers, 'headers')
-        token = request.headers.get('Authorization')
         device_id = request.headers.get('X-Device-ID')
-        
         if not device_id:
             return jsonify({'message': 'Device ID is required'}), 401
-
-        data = None
-        if token:
-            try:
-                token = token.split(' ')[1]  
-                print(token, 'token')
-                data = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
-                print(data)
-                current_user = mongo.db.users.find_one({'_id': ObjectId(data['user_id'])})
-                
-                if not current_user:
-                    return jsonify({'message': 'Invalid token'}), 401
-                    
-            except jwt.ExpiredSignatureError:
-                return jsonify({'message': 'Token has expired'}), 401
-            except jwt.InvalidTokenError:
-                return jsonify({'message': 'Invalid token'}), 401
-        
-        if not data:
-            return jsonify({'message': 'Token is required'}), 401
-        
+            
         device_exists = mongo.db.device_profiles.find_one({'device_id': device_id})
         if not device_exists:
             return jsonify({'message': 'Device not registered'}), 401
             
-        # Pass current_user_id as a keyword argument
-        kwargs['current_user_id'] = data['user_id']
-        
         return f(*args, **kwargs)
     return decorated
 
