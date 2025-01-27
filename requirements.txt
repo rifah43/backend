@@ -1,5 +1,5 @@
 Flask
-praat-parselmouth
+praat-parselmouth 
 python-dotenv
 numpy
 joblib
@@ -9,3 +9,4 @@ pandas
 tensorflow
 Flask-PyMongo
 marshmallow
+pydub
