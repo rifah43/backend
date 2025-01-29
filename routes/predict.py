@@ -129,6 +129,7 @@ def predict():
         
         try:
             features = extract_audio_features(audio_file, form_data['gender'])
+            print("audio_file.content_type")
             if not features:
                 return jsonify({'error': 'Failed to extract voice features'}), 400
             logger.info(f"Extracted features: {features}")
